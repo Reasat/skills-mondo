@@ -90,13 +90,19 @@ Note: exact script filenames (`transform.py` vs `extract.py`) are confirmed duri
 .env
 env/.env
 
-# Build artefacts — uploaded as GitHub Release assets
-# OWL sources: <source>.yaml (YAML) and <source>.owl (final LinkML-derived OWL)
-# Non-OWL sources: <source>.linkml.yaml and <source>.linkml.owl
+# Build artefacts — uploaded as GitHub Release assets (not committed)
+# Core: YAML + RDF/XML component OWL (+ optional mirror / .db / signatures — see Phase 8)
 <source>.owl
 <source>.yaml
 <source>.linkml.yaml
 <source>.linkml.owl
+<source>.db
+<source>.raw.ttl
+<source>.mirror.ttl
+mirror-<source>.owl
+mappings/
+# reports/ may be committed QC *or* release-only artefacts — prefer gitignoring
+# release-named signature/metrics copies if they are only for GitHub Releases
 
 # Build intermediates
 tmp/
@@ -123,7 +129,7 @@ SOURCE      ?= <source-name>
 RAW_OWL     := tmp/$(SOURCE)_raw.owl
 MIRROR_OWL  := tmp/mirror-$(SOURCE).owl
 OUTPUT_OWL  := tmp/transformed-$(SOURCE).owl   # ROBOT-processed intermediate
-OUTPUT_OWL_LINKML := $(SOURCE).owl              # final LinkML-derived OWL (top-level)
+OUTPUT_OWL_LINKML := $(SOURCE).owl              # released RDF/XML component (after convert)
 YAML_OUT    := $(SOURCE).yaml
 MIR         ?= true   # set MIR=false to skip re-downloading: make MIR=false build
 ```
@@ -133,10 +139,11 @@ MIR         ?= true   # set MIR=false to skip re-downloading: make MIR=false bui
 Core `Makefile` targets:
 - `make all` — `build` + `reports`
 - `make mirror` — download raw source OWL to `tmp/`
-- `make build` — full pipeline: ROBOT preprocessing → transform → validate → linkml-owl
+- `make build` — full pipeline: ROBOT preprocessing → transform → validate → linkml-owl → **ROBOT convert to RDF/XML** as released `<source>.owl`
+- `make build-release` — (when targeting mondo-ingest wget) build plus mirror assets, `semsql` `.db`, signatures, SSSOM, metrics — see Phase 8
 - `make reports` — `robot measure` (extended JSON metrics) + `count_classes_by_top_level.sparql` across mirror/transformed/final OWL; produces `reports/metrics.json`, `reports/mirror-top-level-counts.tsv`, `reports/transformed-top-level-counts.tsv`, `reports/top-level-counts.tsv`
 - `make robot-plugins` — copies ROBOT plugin JARs from `/tools/robot-plugins/` (ODK) or local `plugins/` into `tmp/plugins/`; exports `ROBOT_PLUGINS_DIRECTORY`
-- `make dependencies` — installs `linkml-owl==0.5.0` plus bleeding-edge `linkml` and `linkml-runtime` from the `linkml/linkml` monorepo (required for the inlining bug fix — see Known Issues)
+- `make dependencies` — installs `linkml-owl==0.5.0` plus bleeding-edge `linkml` and `linkml-runtime` from the `linkml/linkml` monorepo (required for the inlining bug fix — see Known Issues); also install `semsql` / `sssom` when shipping the mondo-ingest release bundle
 - `make update-schema` — downloads schema from `SCHEMA_URL`
 - `make clean` — removes `tmp/`, `reports/`, build artefacts
 - `make help` — prints usage
@@ -622,13 +629,17 @@ make build    → robot merge -i tmp/mirror-<source>.owl
                   annotate --ontology-iri <IRI> --version-iri <VERSION_IRI>
                 → tmp/transformed-<source>.owl          ← ROBOT intermediate (not the release artefact)
               then Python transform → <source>.yaml
-              then linkml-owl → <source>.owl            ← released OWL artefact (top-level)
+              then linkml-owl → tmp/<source>.functional.owl   ← functional syntax (tmp only)
+              then robot convert → <source>.owl               ← **RDF/XML** released component OWL
 ```
 
 **Output file naming — important:**
 - `tmp/transformed-<source>.owl` — ROBOT-preprocessed intermediate; used as input to `transform.py`
-- `<source>.owl` — final OWL derived by `linkml-owl` from the YAML; this is the top-level release artefact
-- `<source>.yaml` — primary YAML artefact for Mondo ingest
+- `tmp/<source>.functional.owl` — `linkml-owl` dump (OWL Functional Syntax); **not** released
+- `<source>.owl` — **RDF/XML** component OWL published for mondo-ingest / `semsql` (ROBOT convert after linkml-owl)
+- `<source>.yaml` — primary YAML artefact
+
+**Why convert in the source repo:** `linkml-owl` emits Functional Syntax. `semsql` / `rdftab` and mondo-ingest expect RDF/XML (or another RDF serialization ROBOT writes by default). Run `robot convert` **here** so mondo-ingest can wget `<source>.owl` with no further conversion.
 
 SPARQL update files (`sparql/*.ru`) handle structural issues identified in Phase 4.8. The property allowlist (`config/properties.txt`) must always include `rdfs:label` and `owl:deprecated` at minimum. The `sparql/fix_xref_prefixes.ru` file (see Phase 5a–SPARQL below) should be included for every OWL source.
 
@@ -743,9 +754,9 @@ just data2owl
 # python -m linkml_owl.dumpers.owl_dumper -s linkml/mondo_source_schema.yaml -f yaml <source>.linkml.yaml -o <source>.linkml.owl
 ```
 
-Tell the user: the derived OWL is for OWL-native consumers only. `<source>.linkml.yaml` is the primary contract. Known limitation: `linkml-owl` emits OWL Functional format; ROBOT may not load it cleanly in all cases. If it fails on large datasets (rdflib N3 parser error), document this in `docs/pipeline_incidents.md` and release `<source>.linkml.yaml` only.
+Tell the user: `<source>.linkml.yaml` is the primary LinkML contract; the OWL is for OWL-native / mondo-ingest consumers. **`linkml-owl` emits Functional Syntax** — always `robot convert` the dump to **RDF/XML** (or equivalent) before publishing the release OWL, and keep the functional file under `tmp/` only. If `linkml-owl` fails on large datasets, document in `docs/pipeline_incidents.md`; prefer fixing/converting over shipping functional OWL as the release asset.
 
-**After `data2owl` succeeds:** run **`just reports`** (or equivalent) so **`reports/`** is populated from the derived OWL (`robot measure` + optional SPARQL). Wire that into **CI** (e.g. `build.yml` artifacts or committed metrics) alongside `verify` — **not** into GitHub Release uploads; release assets stay YAML + OWL only (Phase 8 table). If you skip OWL entirely (YAML-only release), skip `reports/` too — see **`reports/` folder** in Phase 2.
+**After `data2owl` (+ convert) succeeds:** run **`just reports`** (or equivalent) so **`reports/`** is populated from the **RDF/XML** OWL. When the source is consumed by mondo-ingest via wget, also build the **release bundle** in Phase 8 (`.db`, signatures, etc.) — not YAML+OWL only.
 
 ---
 
@@ -806,22 +817,76 @@ jobs:
           files: |
             <source>.yaml
             <source>.owl
+            # When targeting mondo-ingest wget, also upload the bundle below
+            # (basenames must match mondo-ingest local targets — see contract)
+            # <source>.db
+            # mirror-<source>.owl
+            # reports/mirror_signature-<source>.tsv
+            # reports/component_signature-<source>.tsv
+            # reports/<source>-metrics.json
+            # mappings/<source>.sssom.tsv
           generate_release_notes: true
           draft: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
 
-Substitute the actual output filenames. Released artefacts differ by source type:
+Substitute the actual output filenames. Core artefacts by source type:
 
 | Source type | Released YAML | Released OWL |
 |---|---|---|
-| OWL | `<source>.yaml` | `<source>.owl` (final LinkML-derived OWL, top-level) |
-| Non-OWL | `<source>.linkml.yaml` | `<source>.linkml.owl` (linkml-owl derived) |
+| OWL | `<source>.yaml` | `<source>.owl` (**RDF/XML** after linkml-owl + ROBOT convert) |
+| Non-OWL | `<source>.linkml.yaml` | RDF/XML OWL derived from linkml-owl + ROBOT convert (name per repo convention) |
 
-**GitHub Release assets (`action-gh-release` `files`):** upload **only** the YAML and OWL from the table above. Do **not** attach `reports/*` (or other QC) as release assets — keep `reports/` in-repo (committed or regenerated in CI) and/or as **workflow artifacts** in `build.yml`, not as downloadable release files.
+Note: for OWL sources, the ROBOT-preprocessed intermediate (`tmp/transformed-<source>.owl`) and the functional `linkml-owl` dump are **not** released — they stay under `tmp/`.
 
-Note: for OWL sources, the ROBOT-preprocessed intermediate (`tmp/transformed-<source>.owl`) is not released — it lives in `tmp/` which is gitignored.
+### Mondo-ingest external-release contract (required when mondo-ingest wgets this source)
+
+**Design:** preprocessing lives in the source repo; [mondo-ingest](https://github.com/monarch-initiative/mondo-ingest) only downloads release assets (no ROBOT/semsql for that source). ICD10WHO is the reference implementation.
+
+**Release asset basenames must equal what mondo-ingest expects as local filenames** (so ingest can `wget $(RELEASE_BASE)/$(@F)` with no rename map). At minimum, when following the ICD10WHO pattern:
+
+| Release asset basename | mondo-ingest destination |
+|---|---|
+| `<source>.owl` | `components/<source>.owl` (RDF/XML) |
+| `<source>.db` | `components/<source>.db` (SemanticSQL via `semsql` in **this** repo) |
+| `mirror-<source>.owl` | `tmp/mirror-<source>.owl` |
+| `mirror_signature-<source>.tsv` | `reports/mirror_signature-<source>.tsv` |
+| `component_signature-<source>.tsv` | `reports/component_signature-<source>.tsv` |
+| `<source>.sssom.tsv` | `mappings/<source>.sssom.tsv` |
+| `<source>-metrics.json` | `metadata/<source>-metrics.json` |
+
+Also commonly released (optional extras, not always wget’d by the minimal ingest list): `<source>.yaml`, raw/mirror TTL, source-version TSV, docs.
+
+**Build `.db` in the source repo** from the RDF/XML `<source>.owl` (`semsql make … -P config/prefixes.csv`). Do **not** leave `semsql` / OWL convert for mondo-ingest.
+
+**GitHub Releases flatten paths** (`reports/foo.tsv` → download URL ends in `foo.tsv`). Choose basenames so the flattened name is exactly what mondo-ingest `$(@F)` needs (e.g. ship `reports/mirror_signature-<source>.tsv`, not `reports/mirror_signature.tsv`).
+
+**Reference ingest Makefile pattern** (mondo-ingest side; do not invent per-file URL aliases):
+
+```makefile
+SRC_DOWNLOADS := $(REPORTDIR)/mirror_signature-<source>.tsv \
+		 $(REPORTDIR)/component_signature-<source>.tsv \
+		 $(MAPPINGSDIR)/<source>.sssom.tsv \
+		 metadata/<source>-metrics.json
+ifeq ($(COMP),true)
+SRC_DOWNLOADS += $(COMPONENTSDIR)/<source>.owl \
+		 $(COMPONENTSDIR)/<source>.db \
+		 $(TMPDIR)/mirror-<source>.owl
+endif
+$(SRC_DOWNLOADS): | $(REPORTDIR) $(COMPONENTSDIR) $(TMPDIR) $(MAPPINGSDIR)/
+	wget -nv $(SRC_RELEASE_BASE)/$(@F) -O $@.tmp && mv $@.tmp $@
+```
+
+(`$(@F)` = basename of the target. Use a `.tmp` then `mv` so failed downloads do not leave corrupt finals. In GitHub Markdown, avoid writing Make `$(@F)` unescaped — `@` can mention users; prefer prose or fenced code.)
+
+**Tradeoffs to tell the user (and document in `docs/plan.md`):**
+
+1. **`releases/latest` race:** multiple wgets from `…/releases/latest/download/…` can span a new release mid-run (rare). Prefer pinning a tag, or resolving the latest tag **once** at the start of a CI/`make` run and reusing that base URL. Pin bumps can be manual or automated later.
+2. **No automatic refresh:** after wget, make treats local files as up to date and will **not** re-fetch when a new upstream release appears. Fresh CI checkouts are fine; local re-runs need `make -B`, deleting the downloaded files, or an explicit refresh target.
+3. **`add_external_source` / `eval`:** optional later Make macro so each externalized source is one `$(eval $(call …))` line; ICD10WHO-style explicit list is enough for the first source.
+
+**Docs:** keep source-specific pipeline diagrams/tutorials out of the mondo-ingest PR when externalizing; park them on a docs branch or in the **source** repo README/`docs/` (see ICD10WHO). Holistic “how external sources are documented” can be a separate mondo-ingest docs PR.
 
 **`.github/workflows/build.yml`**
 
@@ -904,13 +969,16 @@ Add this as a `just verify` / `make verify` target so it can be re-run for every
 | `reports/` (when OWL is released) | `make reports` or `just reports` — `metrics.json` + optional SPARQL TSVs |
 
 **OWL sources additionally:**
-- [ ] `<source>.owl` (final LinkML-derived OWL, top-level) can be loaded by ROBOT or opened in Protégé
+- [ ] `<source>.owl` (released **RDF/XML** component) can be loaded by ROBOT or opened in Protégé
+- [ ] Functional `linkml-owl` dump is **not** what is published; convert runs in this repo
+- [ ] If shipping the mondo-ingest bundle: `<source>.db`, `mirror-<source>.owl`, and signature basenames match the Phase 8 contract
 - [ ] `tmp/transformed-<source>.owl` (ROBOT-preprocessed intermediate) can be loaded as a sanity check
 - [ ] If migrating from mondo-ingest: run `robot diff` between this OWL and the mondo-ingest reference OWL
 
 **Non-OWL sources additionally:**
-- [ ] `source.linkml.owl` (linkml-owl output) can be loaded by ROBOT or opened in Protégé
+- [ ] Released OWL is RDF/XML (post–linkml-owl convert), loadable by ROBOT / Protégé
 - [ ] If you ship OWL: `reports/` is generated from that OWL (not “non-OWL ⇒ no reports”)
+- [ ] If targeting mondo-ingest wget: Phase 8 bundle basenames match ingest destinations
 
 ---
 

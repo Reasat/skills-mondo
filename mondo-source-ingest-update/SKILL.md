@@ -14,4 +14,13 @@ Skip re-asking intake or re-probing mappings **only** when that information is a
 
 **`reports/`:** When the pipeline publishes OWL (including **non-OWL → `linkml-owl`**), scaffold or verify **`reports/`** and **`just reports` / `make reports`** per the base skill section **`reports/` folder (ROBOT QC)** — not optional just because the *source* is non-OWL.
 
+**External-release / mondo-ingest wget (when modernizing toward ICD10WHO-style):** Follow the base skill **Phase 8 — Mondo-ingest external-release contract**:
+
+- Released `<source>.owl` must be **RDF/XML** (`robot convert` after `linkml-owl`; functional dump stays in `tmp/`)
+- Ship the wget bundle with **basenames matching mondo-ingest destinations** (`.db`, `mirror-<source>.owl`, `mirror_signature-<source>.tsv`, `component_signature-<source>.tsv`, SSSOM, metrics)
+- Build `semsql` `.db` **in this source repo**, not in mondo-ingest
+- Document `releases/latest` race and wget freshness tradeoffs in `docs/plan.md`
+
+Reference implementation: [icd10who](https://github.com/Reasat/icd10who) (see its README workflow + release assets).
+
 All guardrails and conventions in **mondo-source-ingest** apply unchanged.
